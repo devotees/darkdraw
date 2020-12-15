@@ -1,6 +1,7 @@
 import functools
 import curses
 import threading
+import visidata
 
 from wcwidth import wcswidth
 
@@ -103,3 +104,11 @@ def box(scr, y1, x1, y2, x2, dx=0):
         draw(scr, range(y1+1, y2), range(x1+dx, x2, dx), '│')
         draw(scr, y2, range(x1+dx, x2, dx), '┷')
 
+
+def input(scr, prompt, **kwargs):
+    ymax, xmax = scr.getmaxyx()
+    promptlen = visidata.clipdraw(scr, ymax-1, 0, prompt, 0, w=xmax-1)
+
+    r = visidata.vd.editline(scr, ymax-1, promptlen, xmax-promptlen-2, **kwargs)
+    curses.flushinp()
+    return r

@@ -1,6 +1,8 @@
 import sys
 import itertools
+import contextlib
 import curses
+import visidata
 from darkdraw import *
 
 scroll_rate = 4
@@ -68,13 +70,14 @@ class DarkDraw:
                 return
 
         self.lastkey += str(ch)
-
-        if ch == 'KEY_UP':      self.cursor_y -= scroll_rate; self.top_y -= scroll_rate
+        if ch in self.prefixes: return
+        elif ch == '^S':        self.main.save(input(self.scr, "save as: ", value=self.main.fn))
+        elif ch == 'KEY_UP':    self.cursor_y -= scroll_rate; self.top_y -= scroll_rate
         elif ch == 'KEY_DOWN':  self.cursor_y += scroll_rate; self.top_y += scroll_rate
         elif ch == 'KEY_RIGHT': self.cursor_x += scroll_rate; self.left_x += scroll_rate
         elif ch == 'KEY_LEFT':  self.cursor_x -= scroll_rate; self.left_x -= scroll_rate
         elif ch == 'KEY_SRIGHT': self.cursor_x += 1
-        elif ch == 'KEY_SLEFT':  self.cursor_x -= 1
+        elif ch == 'KEY_SLEFT': self.cursor_x -= 1
         elif ch == 513:         self.cursor_y += 1
         elif ch == 529:         self.cursor_y -= 1
         else:
@@ -116,36 +119,53 @@ class DarkDraw:
                     self.handle_key(ch)
                 except Exception as e:
                     self.status(str(e))
+                except visidata.EscapeException as e:
+                    self.status(str(e))
 
 
 class Tile:
-    def __init__(self, fp):
-        self.mask = []
-        self.lines = []
-        self.palette = {}  # ch -> colorstr
+    def __init__(self, fn):
+        self.pcolors = []  # list of list of colorcode
+        self.lines = []  # list of list of char
+        self.palette = {}  # colorcode -> colorstr
+        self.fn = fn
 
-        for line in fp.readlines():
+        with open(fn) as fp:
+          for line in fp.readlines():
             line = line[:-1]
             if not line: continue
             if line.startswith('#C '):  #C S fg on bg underline reverse
-                self.palette[line[3]] = line[4:]
+                self.palette[line[3]] = line[4:].strip()
             elif line.startswith('#M '):  #M mask of color id (S above) corresponding to line
-                self.mask.append(line[3:])
+                self.pcolors.append(line[3:])
             else:
                 self.lines.append(line)
+
+    def save(self, fn):
+        with open(fn, mode='w') as fp:
+            for ch, colorstr in self.palette.items():
+                fp.write(f"#C {ch} {colorstr}\n")
+
+            for y in range(len(self.pcolors)):
+                fp.write("#M " + ''.join(self.pcolors[y]) + "\n")
+
+            for y in range(len(self.lines)):
+                fp.write(''.join(self.lines[y]) + "\n")
+
+        self.status(f"saved to {fn}")
 
     def get_ch(self, x, y):
         return self.lines[y%len(self.lines)][x]
 
     def get_pcolor(self, x, y):
-        return self.mask[y%len(self.lines)][x]
+        return self.pcolors[y%len(self.lines)][x]
 
     def blit(self, scr, *, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
         scrh, scrw = scr.getmaxyx()
         y2 = y2 or scrh-1
         x2 = x2 or scrw-1
         y = y1
-        lines = list(itertools.zip_longest(self.lines, self.mask))
+        lines = list(itertools.zip_longest(self.lines, self.pcolors))
         while y < y2:
           if y-y1+yoff >= len(lines):
               try:
@@ -187,12 +207,15 @@ class Tile:
               raise Exception(y, y2)
 
 
-
 def tui_main(scr):
+    curses.raw()
+    curses.meta(1)
     curses.mousemask(-1)
+    with contextlib.suppress(curses.error):
+        curses.curs_set(0)
     scr.timeout(30)
 
-    app = DarkDraw(Tile(open(sys.argv[1])))
+    app = DarkDraw(Tile(sys.argv[1]))
     scrh, scrw = scr.getmaxyx()
     app.cursor_x = scrw//2
     app.cursor_y = scrh//2

@@ -15,6 +15,8 @@ class DarkDraw:
         self.prefixes = ['^[']
         self.cursor_x, self.cursor_y = 0, 0
         self.left_x, self.top_y = 0, 0
+        self.current_ch = ' '
+        self.current_pcolor = ' '
 
     def check_cursor(self):
         scrh, scrw = self.scr.getmaxyx()
@@ -30,16 +32,41 @@ class DarkDraw:
         right_status = f'{self.lastkey: <10s}  {self.cursor_y:2d},{self.cursor_x:2d} / {scrh:2d},{scrw:2d}'
         scr.addstr(scrh-1, scrw-len(right_status)-1, right_status, colors.get('green'))
 
-        left_status = wc_ljust(self._status, scrw-len(right_status)-3)
+        left_status = f'{self.current_ch} {self.current_pcolor}  | {self._status}'
+        left_status = wc_ljust(left_status, scrw-len(right_status)-3)
         scr.addstr(scrh-1, 1, left_status)
 
         self.main.blit(scr, yoff=self.top_y, xoff=self.left_x)
 
         scr.move(self.cursor_y-self.top_y, self.cursor_x-self.left_x)
 
+    def handle_mouse(self, x, y, b):
+        if b & curses.BUTTON1_PRESSED:   self.handle_press(x, y, 1)
+        elif b & curses.BUTTON1_RELEASED: self.handle_release(x, y, 1)
+        elif b & curses.BUTTON1_CLICKED: self.handle_click(x, y, 1)
+        elif b & curses.BUTTON2_PRESSED:   self.handle_press(x, y, 2)
+        elif b & curses.BUTTON2_RELEASED: self.handle_release(x, y, 2)
+        elif b & curses.BUTTON2_CLICKED: self.handle_click(x, y, 2)
+        elif b & curses.BUTTON3_PRESSED:   self.handle_press(x, y, 3)
+        elif b & curses.BUTTON3_RELEASED: self.handle_release(x, y, 3)
+        elif b & curses.BUTTON3_CLICKED: self.handle_click(x, y, 3)
+        else:
+            self.lastkey += f'{b}({x}, {y})'
+
     def handle_key(self, ch):
         if self.lastkey not in self.prefixes:
             self.lastkey = ''
+
+        self._status = ''
+
+        if ch == 'KEY_MOUSE':
+            id, x, y, z, bstate = curses.getmouse()
+            try:
+                return self.handle_mouse(x, y, bstate)
+            except Exception as e:
+                self.status(e)
+                return
+
         self.lastkey += str(ch)
 
         if ch == 'KEY_UP':      self.cursor_y -= scroll_rate; self.top_y -= scroll_rate
@@ -48,19 +75,33 @@ class DarkDraw:
         elif ch == 'KEY_LEFT':  self.cursor_x -= scroll_rate; self.left_x -= scroll_rate
         elif ch == 'KEY_SRIGHT': self.cursor_x += 1
         elif ch == 'KEY_SLEFT':  self.cursor_x -= 1
-        elif ch == 513:  self.cursor_y += 1
-        elif ch == 529: self.cursor_y -= 1
+        elif ch == 513:         self.cursor_y += 1
+        elif ch == 529:         self.cursor_y -= 1
         else:
-            self.status(f"no such key '{ch}'")
+            self.status(f"unknown key '{ch}'")
 
-        self.check_cursor()
+    def handle_click(self, x, y, b):
+        self.lastkey += f'C{b}({x}, {y})'
+        if b == 1:  # left click to move cursor
+            self.cursor_y = self.top_y + y
+            self.cursor_x = self.left_x + x
+        elif b == 3:  # right click
+            self.current_ch = self.main.get_ch(self.left_x+x, self.top_y+y)
+            self.current_pcolor = self.main.get_pcolor(self.left_x+x, self.top_y+y)
 
-    def status(self, s):
-        self._status = str(s)
+    def handle_press(self, x, y, b):
+        self.lastkey += f'P{b}({x}, {y})'
+
+    def handle_release(self, x, y, b):
+        self.lastkey += f'R{b}({x}, {y})'
+
+    def status(self, *args):
+        self._status = ' '.join(map(str, args))
 
     def run(self, scr):
         self.scr = scr
         while True:
+            self.check_cursor()
             self.draw()
             ch = getkey(self.scr)
 
@@ -93,7 +134,13 @@ class Tile:
             else:
                 self.lines.append(line)
 
-    def blit(self, scr, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
+    def get_ch(self, x, y):
+        return self.lines[y%len(self.lines)][x]
+
+    def get_pcolor(self, x, y):
+        return self.mask[y%len(self.lines)][x]
+
+    def blit(self, scr, *, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
         scrh, scrw = scr.getmaxyx()
         y2 = y2 or scrh-1
         x2 = x2 or scrw-1

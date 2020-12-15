@@ -93,10 +93,13 @@ class DarkDraw:
             self.current_pcolor = self.main.get_pcolor(self.left_x+x, self.top_y+y)
 
     def handle_press(self, x, y, b):
-        self.lastkey += f'P{b}({x}, {y})'
+        self.press_y = self.top_y + y
+        self.press_x = self.left_x + x
+        self.lastkey = f'P{b}({x}, {y})'
 
     def handle_release(self, x, y, b):
-        self.lastkey += f'R{b}({x}, {y})'
+        self.cursor = [self.press_x, self.press_y, self.left_x+x, self.top_y+y]
+        self.lastkey = f'R{b}({x}, {y})'
 
     def status(self, *args):
         self._status = ' '.join(map(str, args))

@@ -12,6 +12,14 @@ options = AttrDict()
 
 scroll_rate = 4
 
+def colorstr_from_attr(attr):
+            colorpair = curses.pair_number(attr)
+            fg, bg = curses.pair_content(colorpair)
+            r = f'{fg} on {bg}'
+            if attr & curses.A_BOLD: r += ' bold'
+            if attr & curses.A_UNDERLINE: r += ' underline'
+            return r
+
 def remove_attr(colorstr, attrstr):
     return ' '.join(x for x in colorstr.split() if x != attrstr)
 
@@ -69,7 +77,7 @@ class DarkDraw:
 
         mainbox = Box(scr, 0, 0, scrw, scrh-2)
         mainbox.erase()
-        self.main.blit(mainbox, yoff=self.top_y, xoff=self.left_x)
+        mainbox.blit(self.main, yoff=self.top_y, xoff=self.left_x)
 
         ## right status on bottom row
         right_status = f'{self.lastkey: <10s} {self.cursor_x:2d},{self.cursor_y:2d} / {scrw},{scrh}'
@@ -79,29 +87,29 @@ class DarkDraw:
 
         ## left status
         x = 1
-        x += sbox.print(self.current_ch, x=x, w=2, color=self.current_color)
-        x += sbox.print(self.current_fg, x=x, w=4, color=self.current_fg)
-        x += sbox.print(self.current_bg, x=x, w=4, color=self.current_bg)
-        x += sbox.print(self.current_attr, x=x, w=12, color=self.current_attr)
+        x += sbox.ljust(self.current_ch, x=x, w=2, color=self.current_color)
+        x += sbox.ljust(self.current_fg, x=x, w=4, color=self.current_fg)
+        x += sbox.ljust(self.current_bg, x=x, w=4, color=self.current_bg)
+        x += sbox.ljust(self.current_attr, x=x, w=12, color=self.current_attr)
 
-        sbox.print(self._status, x=x+2)
+        sbox.ljust(self._status, x=x+2)
 
         ## color palette
         self.box_colors.erase()
         self.box_colors.box()
         for i in range(0, 240):
-            self.box_colors.print('  ', y=i//36+1, x=(i%36)*2+3, color=f'0 on {i+16}')
+            self.box_colors.ljust('  ', y=i//36+1, x=(i%36)*2+3, color=f'0 on {i+16}')
 
         self.box_chars.erase()
         self.box_chars.box(color='bold 242 on 0')
         ## character palette
         for i in range(256):
-            self.box_chars.print(chr(self.codepage+i), y=i//16+1, x=(i%16)*3+6, w=3, color='white')
+            self.box_chars.ljust(chr(self.codepage+i), y=i//16+1, x=(i%16)*3+6, w=3, color='white')
             self.box_chars.center(f'U+{self.codepage:4X}', y=self.box_chars.h)
 
         for i in range(16):
-            self.box_chars.print('0123456789ABCDEF'[i], y=i+1, color='bold 242 on 0')
-            self.box_chars.print('0123456789ABCDEF'[i], x=i*3+6, color='bold 242 on 0')
+            self.box_chars.ljust('0123456789ABCDEF'[i], y=i+1, color='bold 242 on 0')
+            self.box_chars.ljust('0123456789ABCDEF'[i], x=i*3+6, color='bold 242 on 0')
 
         scr.refresh()
         curses.doupdate()
@@ -161,8 +169,9 @@ class DarkDraw:
             self.cursor_y = self.top_y + y
             self.cursor_x = self.left_x + x
         elif b == 3:  # right click
-            self.current_ch = self.main.get_ch(self.left_x+x, self.top_y+y)
-            self.current_color = self.main.get_color(self.left_x+x, self.top_y+y)
+            c = self.scr.inch(y, x)
+            self.current_ch = chr(c)
+            self.current_color = colorstr_from_attr(c >> 8)
 
     def handle_press(self, x, y, b):
         self.press_y = self.top_y + y
@@ -244,57 +253,7 @@ class Tile:
     def get_color(self, x, y):
         pc = self.get_pcolor(x, y)
         return self.palette[pc]
-        colorpair = curses.pair_number(pc)
-        fg, bg = pair_content(colorpair)
-        r = f'{fg} on {bg}'
-        if pc & curses.A_BOLD: r += ' bold'
-        if pc & curses.A_UNDERLINE: r += ' underline'
-        return r
 
-    def blit(self, box, *, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
-        y2 = y2 or box.h-1
-        x2 = x2 or box.w-1
-        y = y1
-        lines = list(itertools.zip_longest(self.lines, self.pcolors))
-        while y < y2:
-          if y-y1+yoff >= len(lines):
-              try:
-                  box.scr.addstr(y, x1, ' '*(x2-x1), 0)
-                  y += 1
-              except curses.error:
-                  raise Exception(y, y2)
-              continue
-          else:
-            line, linemask = lines[(y-y1+yoff)%len(lines)]
-            pre = ''
-            x = x1
-            i = 0
-            while x < x2:
-                c = line[(xoff+i)%len(line)]
-                cmask = linemask[(xoff+i)%len(linemask)] if linemask else 0
-                w = wcswidth(c)
-                if w == 0:
-                    pre = c
-                elif w < 0: # not printable
-                    pass
-                else:
-                    attr = colors.get(self.palette[cmask]) if cmask else 0
-                    try:
-                        box.scr.addstr(y, x, pre+c, attr)
-                    except curses.error:
-                        raise Exception(f'y={y} x={x}')
-                    x += w
-                    pre = ''
-                i += 1
-
-            y += 1
-
-        while y < y2:
-          try:
-            box.scr.addstr(y, x1, ' '*(x2-x1), 0)
-            y += 1
-          except curses.error:
-              raise Exception(y, y2)
 
 
 def tui_main(scr):

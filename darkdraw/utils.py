@@ -1,4 +1,5 @@
 import functools
+import itertools
 import curses
 import threading
 import visidata
@@ -89,20 +90,6 @@ def fail(s):
     raise Exception(s)
 
 
-def draw(scr, yr, xr, s, attr=0, funcs=[]):
-    if isinstance(attr, str):
-        attr = colors.get(attr)
-
-    if not isinstance(yr, range): yr = range(yr, yr+1)
-    if not isinstance(xr, range): xr = range(xr, xr+1)
-    ymax, xmax = scr.getmaxyx()
-    for y in yr:
-        for x in xr:
-            if x >= xmax: fail('need wider terminal (at least %s)' % max(xr))
-            if y >= ymax: fail('need taller terminal (at least %s)' % max(yr))
-            scr.addstr(y, x, s, attr)
-
-
 class Box:
     def __init__(self, scr, x1, y1, w=None, h=None):
         self.scr = scr
@@ -128,37 +115,51 @@ class Box:
         self.h = v-self.y1
 
     def erase(self):
-        for y in range(self.y1, self.y2):
+        for y in range(self.y1, self.y2+1):
             self.scr.addstr(y, 0, ' '*self.w, 0)
 
-    def box(self, dx=0, color=''):
+    def draw(self, yr, xr, s, attr=0):
+        'Draw *s* into box.  *yr* an *xr* may be ranges.'
+        if isinstance(attr, str):
+            attr = colors.get(attr)
+
+        if not isinstance(yr, range): yr = range(yr, yr+1)
+        if not isinstance(xr, range): xr = range(xr, xr+1)
+        ymax, xmax = self.scr.getmaxyx()
+        if self.y1+max(yr) > ymax: fail('need taller screen (at least %s)' % max(yr))
+        if self.x1+max(xr) > xmax: fail('need wider screen (at least %s)' % max(xr))
+        for y in yr:
+            for x in xr:
+                self.scr.addstr(self.y1+y, self.x1+x, s, attr)
+
+
+    def box(self, x1=0, y1=0, dx=0, color=''):
         if self.w <= 0 or self.h <= 0: return
         attr = colors.get(color)
-        x1, y1, x2, y2=self.x1, self.y1, self.x2, self.y2
-        scr = self.scr
-        draw(scr, y1, range(x1, x2), '━', attr)
-        draw(scr, y2, range(x1, x2), '━', attr)
-        draw(scr, range(y1, y2), x1, '┃', attr)
-        draw(scr, range(y1, y2), x2, '┃', attr)
-        draw(scr, y1, x1, '┏', attr)
-        draw(scr, y1, x2, '┓', attr)
-        draw(scr, y2, x1, '┗', attr)
-        draw(scr, y2, x2, '┛', attr)
+        x2, y2=x1+self.w, y1+self.h
+        self.draw(0, range(x1, x2), '━', attr)
+        self.draw(y2, range(x1, x2), '━', attr)
+        self.draw(range(y1, y2), x1, '┃', attr)
+        self.draw(range(y1, y2), x2, '┃', attr)
+        self.draw(y1, x1, '┏', attr)
+        self.draw(y1, x2, '┓', attr)
+        self.draw(y2, x1, '┗', attr)
+        self.draw(y2, x2, '┛', attr)
         if dx:
-            draw(scr, y1, range(x1+dx, x2, dx), '┯', attr)
-            draw(scr, y1, range(x1+dx, x2, dx), '┯', attr)
-            draw(scr, range(y1+1, y2), range(x1+dx, x2, dx), '│', attr)
-            draw(scr, y2, range(x1+dx, x2, dx), '┷', attr)
+            self.draw(y1, range(x1+dx, x2, dx), '┯', attr)
+            self.draw(y1, range(x1+dx, x2, dx), '┯', attr)
+            self.draw(range(y1+1, y2), range(x1+dx, x2, dx), '│', attr)
+            self.draw(y2, range(x1+dx, x2, dx), '┷', attr)
 
     def rjust(self, s, x=0, y=0, w=0, color=' '):
         w = w or self.w
-        return self.print(s, x=self.x1+x+w-wcswidth(s)-1, y=y, color=color)
+        return self.ljust(s, x=self.x1+x+w-wcswidth(s)-1, y=y, color=color)
 
     def center(self, s, x=0, y=0, w=0, padding=' '):
         x += max(0, ((w or self.w) - wcswidth(s)))
-        return self.print(s, x=self.x1+x//2, y=y, w=w-x)
+        return self.ljust(s, x=self.x1+x//2, y=y, w=w-x)
 
-    def print(self, s, x=0, y=0, w=0, color=' '):
+    def ljust(self, s, x=0, y=0, w=0, color=' '):
         if self.w <= 0 or self.h <= 0: return
         if y > self.h: fail(f'{y}/{self.h}')
 
@@ -175,15 +176,60 @@ class Box:
             elif cw < 0: # not printable
                 pass
             else:
-                self.scr.addstr(self.y1+y, self.x1+xi, pre+c, attr)
+                self.draw(y, xi, pre+c, attr)
                 pre = ''
                 xi += cw
 
         # add blanks to fill width
         for i in range(xi-x, w+1):
-            self.scr.addstr(self.y1+y, self.x1+xi+i, ' ', attr)
+            self.draw(y, xi+i, ' ', attr)
 
         return xi-x
+
+    def blit(self, tile, *, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
+        y2 = y2 or self.h-1
+        x2 = x2 or self.w-1
+        y = y1
+        lines = list(itertools.zip_longest(tile.lines, tile.pcolors))
+        while y < y2:
+          if y-y1+yoff >= len(lines):
+              try:
+                  self.draw(y, x1, ' '*(x2-x1), 0)
+                  y += 1
+              except curses.error:
+                  raise Exception(y, y2)
+              continue
+          else:
+            line, linemask = lines[(y-y1+yoff)%len(lines)]
+            pre = ''
+            x = x1
+            i = 0
+            while x < x2:
+                c = line[(xoff+i)%len(line)]
+                cmask = linemask[(xoff+i)%len(linemask)] if linemask else 0
+                w = wcswidth(c)
+                if w == 0:
+                    pre = c
+                elif w < 0: # not printable
+                    pass
+                else:
+                    attr = colors.get(tile.palette[cmask]) if cmask else 0
+                    try:
+                        self.draw(y, x, pre+c, attr)
+                    except curses.error:
+                        raise Exception(f'y={y} x={x}')
+                    x += w
+                    pre = ''
+                i += 1
+
+            y += 1
+
+        while y < y2:
+          try:
+            self.draw(y, x1, ' '*(x2-x1), 0)
+            y += 1
+          except curses.error:
+              raise Exception(y, y2)
 
 
 def input(scr, prompt, **kwargs):

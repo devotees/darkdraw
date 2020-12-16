@@ -5,6 +5,22 @@ import visidata
 
 from wcwidth import wcswidth
 
+class AttrDict(dict):
+    'Augment a dict with more convenient .attr syntax.  not-present keys return None.'
+    def __getattr__(self, k):
+        try:
+            return self[k]
+        except KeyError:
+            if k.startswith("__"):
+                raise AttributeError
+            return None
+
+    def __setattr__(self, k, v):
+        self[k] = v
+
+    def __dir__(self):
+        return self.keys()
+
 
 class Colors:
     def __init__(self):
@@ -73,11 +89,9 @@ def fail(s):
     raise Exception(s)
 
 
-def draw(scr, yr, xr, s, colorstr='', funcs=[]):
-    if colorstr:
-        attr = colors.get(colorstr)
-    else:
-        attr = 0
+def draw(scr, yr, xr, s, attr=0, funcs=[]):
+    if isinstance(attr, str):
+        attr = colors.get(attr)
 
     if not isinstance(yr, range): yr = range(yr, yr+1)
     if not isinstance(xr, range): xr = range(xr, xr+1)
@@ -89,20 +103,87 @@ def draw(scr, yr, xr, s, colorstr='', funcs=[]):
             scr.addstr(y, x, s, attr)
 
 
-def box(scr, y1, x1, y2, x2, dx=0):
-    draw(scr, y1, range(x1, x2), '━')
-    draw(scr, y2, range(x1, x2), '━')
-    draw(scr, range(y1, y2), x1, '┃')
-    draw(scr, range(y1, y2), x2, '┃')
-    draw(scr, y1, x1, '┏')
-    draw(scr, y1, x2, '┓')
-    draw(scr, y2, x1, '┗')
-    draw(scr, y2, x2, '┛')
-    if dx:
-        draw(scr, y1, range(x1+dx, x2, dx), '┯')
-        draw(scr, y1, range(x1+dx, x2, dx), '┯')
-        draw(scr, range(y1+1, y2), range(x1+dx, x2, dx), '│')
-        draw(scr, y2, range(x1+dx, x2, dx), '┷')
+class Box:
+    def __init__(self, scr, x1, y1, w=None, h=None):
+        self.scr = scr
+        self.h = h or scr.getmaxyx()[0]-1
+        self.w = w or scr.getmaxyx()[1]-2
+        self.x1 = x1
+        self.y1 = y1
+
+    @property
+    def x2(self):
+        return self.x1+self.w
+
+    @x2.setter
+    def x2(self, v):
+        self.w = v-self.x1
+
+    @property
+    def y2(self):
+        return self.y1+self.h
+
+    @y2.setter
+    def y2(self, v):
+        self.h = v-self.y1
+
+    def erase(self):
+        for y in range(self.y1, self.y2):
+            self.scr.addstr(y, 0, ' '*self.w, 0)
+
+    def box(self, dx=0, color=''):
+        if self.w <= 0 or self.h <= 0: return
+        attr = colors.get(color)
+        x1, y1, x2, y2=self.x1, self.y1, self.x2, self.y2
+        scr = self.scr
+        draw(scr, y1, range(x1, x2), '━', attr)
+        draw(scr, y2, range(x1, x2), '━', attr)
+        draw(scr, range(y1, y2), x1, '┃', attr)
+        draw(scr, range(y1, y2), x2, '┃', attr)
+        draw(scr, y1, x1, '┏', attr)
+        draw(scr, y1, x2, '┓', attr)
+        draw(scr, y2, x1, '┗', attr)
+        draw(scr, y2, x2, '┛', attr)
+        if dx:
+            draw(scr, y1, range(x1+dx, x2, dx), '┯', attr)
+            draw(scr, y1, range(x1+dx, x2, dx), '┯', attr)
+            draw(scr, range(y1+1, y2), range(x1+dx, x2, dx), '│', attr)
+            draw(scr, y2, range(x1+dx, x2, dx), '┷', attr)
+
+    def rjust(self, s, x=0, y=0, w=0, color=' '):
+        w = w or self.w
+        return self.print(s, x=self.x1+x+w-wcswidth(s)-1, y=y, color=color)
+
+    def center(self, s, x=0, y=0, w=0, padding=' '):
+        x += max(0, ((w or self.w) - wcswidth(s)))
+        return self.print(s, x=self.x1+x//2, y=y, w=w-x)
+
+    def print(self, s, x=0, y=0, w=0, color=' '):
+        if self.w <= 0 or self.h <= 0: return
+        if y > self.h: fail(f'{y}/{self.h}')
+
+        scrh, scrw = self.scr.getmaxyx()
+        attr = colors.get(color)
+        pre = ''
+        xi = x
+        for c in s:
+            cw = wcswidth(c)
+            if xi+cw >= self.w:
+                break
+            if cw == 0:
+                pre += c
+            elif cw < 0: # not printable
+                pass
+            else:
+                self.scr.addstr(self.y1+y, self.x1+xi, pre+c, attr)
+                pre = ''
+                xi += cw
+
+        # add blanks to fill width
+        for i in range(xi-x, w+1):
+            self.scr.addstr(self.y1+y, self.x1+xi+i, ' ', attr)
+
+        return xi-x
 
 
 def input(scr, prompt, **kwargs):

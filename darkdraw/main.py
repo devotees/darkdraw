@@ -1,11 +1,20 @@
-import sys
+from dataclasses import dataclass
 import itertools
 import contextlib
+import sys
 import curses
+import curses.panel
+
 import visidata
 from darkdraw import *
 
+options = AttrDict()
+
 scroll_rate = 4
+
+def remove_attr(colorstr, attrstr):
+    return ' '.join(x for x in colorstr.split() if x != attrstr)
+
 
 class DarkDraw:
     def __init__(self, screen):
@@ -18,7 +27,34 @@ class DarkDraw:
         self.cursor_x, self.cursor_y = 0, 0
         self.left_x, self.top_y = 0, 0
         self.current_ch = ' '
-        self.current_pcolor = ' '
+        self.current_color = ' '
+        self.codepage = 0x2600
+
+        self.press_y = 0
+        self.press_x = 0
+
+        self.box_colors = None
+        self.box_chars = None
+
+
+    @property
+    def current_bg(self):
+        colorpair = curses.pair_number(colors.get(self.current_color))
+        fg, bg = curses.pair_content(colorpair)
+        return f'on {bg}'
+
+    @property
+    def current_fg(self):
+        colorpair = curses.pair_number(colors.get(self.current_color))
+        fg, bg = curses.pair_content(colorpair)
+        return f'{fg}'
+
+    @property
+    def current_attr(self):
+        r = []
+        if 'bold' in self.current_color: r.append('bold')
+        if 'underline' in self.current_color: r.append('underline')
+        return ' '.join(r)
 
     def check_cursor(self):
         scrh, scrw = self.scr.getmaxyx()
@@ -31,16 +67,44 @@ class DarkDraw:
         scr = self.scr
         scrh, scrw = scr.getmaxyx()
 
-        right_status = f'{self.lastkey: <10s}  {self.cursor_y:2d},{self.cursor_x:2d} / {scrh:2d},{scrw:2d}'
-        scr.addstr(scrh-1, scrw-len(right_status)-1, right_status, colors.get('green'))
+        mainbox = Box(scr, 0, 0, scrw, scrh-2)
+        mainbox.erase()
+        self.main.blit(mainbox, yoff=self.top_y, xoff=self.left_x)
 
-        left_status = f'{self.current_ch} {self.current_pcolor}  | {self._status}'
-        left_status = wc_ljust(left_status, scrw-len(right_status)-3)
-        scr.addstr(scrh-1, 1, left_status)
+        ## right status on bottom row
+        right_status = f'{self.lastkey: <10s} {self.cursor_x:2d},{self.cursor_y:2d} / {scrw},{scrh}'
 
-        self.main.blit(scr, yoff=self.top_y, xoff=self.left_x)
+        sbox = Box(scr, 0, scrh-1) # the last line
+        rstatw = sbox.rjust(right_status, color='bold')
 
-        scr.move(self.cursor_y-self.top_y, self.cursor_x-self.left_x)
+        ## left status
+        x = 1
+        x += sbox.print(self.current_ch, x=x, w=2, color=self.current_color)
+        x += sbox.print(self.current_fg, x=x, w=4, color=self.current_fg)
+        x += sbox.print(self.current_bg, x=x, w=4, color=self.current_bg)
+        x += sbox.print(self.current_attr, x=x, w=12, color=self.current_attr)
+
+        sbox.print(self._status, x=x+2)
+
+        ## color palette
+        self.box_colors.erase()
+        self.box_colors.box()
+        for i in range(0, 240):
+            self.box_colors.print('  ', y=i//36+1, x=(i%36)*2+3, color=f'0 on {i+16}')
+
+        self.box_chars.erase()
+        self.box_chars.box(color='bold 242 on 0')
+        ## character palette
+        for i in range(256):
+            self.box_chars.print(chr(self.codepage+i), y=i//16+1, x=(i%16)*3+6, w=3, color='white')
+            self.box_chars.center(f'U+{self.codepage:4X}', y=self.box_chars.h)
+
+        for i in range(16):
+            self.box_chars.print('0123456789ABCDEF'[i], y=i+1, color='bold 242 on 0')
+            self.box_chars.print('0123456789ABCDEF'[i], x=i*3+6, color='bold 242 on 0')
+
+        scr.refresh()
+        curses.doupdate()
 
     def handle_mouse(self, x, y, b):
         if b & curses.BUTTON1_PRESSED:   self.handle_press(x, y, 1)
@@ -63,11 +127,7 @@ class DarkDraw:
 
         if ch == 'KEY_MOUSE':
             id, x, y, z, bstate = curses.getmouse()
-            try:
-                return self.handle_mouse(x, y, bstate)
-            except Exception as e:
-                self.status(e)
-                return
+            return self.handle_mouse(x, y, bstate)
 
         self.lastkey += str(ch)
         if ch in self.prefixes: return
@@ -80,6 +140,18 @@ class DarkDraw:
         elif ch == 'KEY_SLEFT': self.cursor_x -= 1
         elif ch == 513:         self.cursor_y += 1
         elif ch == 529:         self.cursor_y -= 1
+        elif ch == 'KEY_NPAGE': self.codepage += 0x100
+        elif ch == 'KEY_PPAGE': self.codepage -= 0x100
+        elif ch == 'c':         self.box_colors.h = -self.box_colors.h
+        elif ch == 'C':         self.box_chars.h = -self.box_chars.h
+        elif ch == ' ':         self.main.set_ch(self.cursor_x, self.cursor_y, self.current_ch)
+        elif ch == '>':         self.main.set_bg(self.cursor_x, self.cursor_y, self.current_bg)
+        elif ch == '<':         self.main.set_fg(self.cursor_x, self.cursor_y, self.current_fg)
+        elif ch == 'a':         self.main.set_attr(self.cursor_x, self.cursor_y, self.current_attr)
+        elif ch == 'U':         self.current_color = 'underline ' + remove_attr(self.current_color, 'underline')
+        elif ch == 'u':         self.current_color = remove_attr(self.current_color, 'underline')
+        elif ch == 'B':         self.current_color = 'bold ' + remove_attr(self.current_color, 'bold')
+        elif ch == 'b':         self.current_color = remove_attr(self.current_color, 'bold')
         else:
             self.status(f"unknown key '{ch}'")
 
@@ -90,7 +162,7 @@ class DarkDraw:
             self.cursor_x = self.left_x + x
         elif b == 3:  # right click
             self.current_ch = self.main.get_ch(self.left_x+x, self.top_y+y)
-            self.current_pcolor = self.main.get_pcolor(self.left_x+x, self.top_y+y)
+            self.current_color = self.main.get_color(self.left_x+x, self.top_y+y)
 
     def handle_press(self, x, y, b):
         self.press_y = self.top_y + y
@@ -106,6 +178,10 @@ class DarkDraw:
 
     def run(self, scr):
         self.scr = scr
+
+        self.box_colors = Box(scr, 0, 0, 77, 8)
+        self.box_chars = Box(scr, 0, 8, 58, 17)
+
         while True:
             self.check_cursor()
             self.draw()
@@ -122,6 +198,8 @@ class DarkDraw:
                     self.handle_key(ch)
                 except Exception as e:
                     self.status(str(e))
+                    if options.debug:
+                        raise
                 except visidata.EscapeException as e:
                     self.status(str(e))
 
@@ -163,16 +241,25 @@ class Tile:
     def get_pcolor(self, x, y):
         return self.pcolors[y%len(self.lines)][x]
 
-    def blit(self, scr, *, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
-        scrh, scrw = scr.getmaxyx()
-        y2 = y2 or scrh-1
-        x2 = x2 or scrw-1
+    def get_color(self, x, y):
+        pc = self.get_pcolor(x, y)
+        return self.palette[pc]
+        colorpair = curses.pair_number(pc)
+        fg, bg = pair_content(colorpair)
+        r = f'{fg} on {bg}'
+        if pc & curses.A_BOLD: r += ' bold'
+        if pc & curses.A_UNDERLINE: r += ' underline'
+        return r
+
+    def blit(self, box, *, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
+        y2 = y2 or box.h-1
+        x2 = x2 or box.w-1
         y = y1
         lines = list(itertools.zip_longest(self.lines, self.pcolors))
         while y < y2:
           if y-y1+yoff >= len(lines):
               try:
-                  scr.addstr(y, x1, ' '*(x2-x1), 0)
+                  box.scr.addstr(y, x1, ' '*(x2-x1), 0)
                   y += 1
               except curses.error:
                   raise Exception(y, y2)
@@ -193,7 +280,7 @@ class Tile:
                 else:
                     attr = colors.get(self.palette[cmask]) if cmask else 0
                     try:
-                        scr.addstr(y, x, pre+c, attr)
+                        box.scr.addstr(y, x, pre+c, attr)
                     except curses.error:
                         raise Exception(f'y={y} x={x}')
                     x += w
@@ -204,7 +291,7 @@ class Tile:
 
         while y < y2:
           try:
-            scr.addstr(y, x1, ' '*(x2-x1), 0)
+            box.scr.addstr(y, x1, ' '*(x2-x1), 0)
             y += 1
           except curses.error:
               raise Exception(y, y2)
@@ -214,12 +301,18 @@ def tui_main(scr):
     curses.raw()
     curses.meta(1)
     curses.mousemask(-1)
+    curses.curs_set(False)
+
     with contextlib.suppress(curses.error):
         curses.curs_set(0)
     scr.timeout(30)
 
-    app = DarkDraw(Tile(sys.argv[1]))
-    scrh, scrw = scr.getmaxyx()
-    app.cursor_x = scrw//2
-    app.cursor_y = scrh//2
+    inputfns = []
+
+    for arg in sys.argv[1:]:
+        if arg in ['-d', '--debug']: options.debug = True
+        else:
+            inputfns.append(arg)
+
+    app = DarkDraw(*(Tile(fn) for fn in inputfns))
     app.run(scr)

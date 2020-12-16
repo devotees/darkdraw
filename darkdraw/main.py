@@ -40,6 +40,7 @@ class DarkDraw:
 
         self.press_y = 0
         self.press_x = 0
+        self.extras = []
 
         self.box_colors = None
         self.box_chars = None
@@ -87,7 +88,7 @@ class DarkDraw:
 
         ## left status
         x = 1
-        x += sbox.ljust(self.current_ch, x=x, w=2, color=self.current_color)
+        x += sbox.ljust(self.current_ch, x=x, w=2, color='white')
         x += sbox.ljust(self.current_fg, x=x, w=4, color=self.current_fg)
         x += sbox.ljust(self.current_bg, x=x, w=4, color=self.current_bg)
         x += sbox.ljust(self.current_attr, x=x, w=12, color=self.current_attr)
@@ -98,7 +99,7 @@ class DarkDraw:
         self.box_colors.erase()
         self.box_colors.box()
         for i in range(0, 240):
-            self.box_colors.ljust('  ', y=i//36+1, x=(i%36)*2+3, color=f'0 on {i+16}')
+            self.box_colors.ljust('██', y=i//36+1, x=(i%36)*2+3, color=f'{i+16}')
 
         self.box_chars.erase()
         self.box_chars.box(color='bold 242 on 0')
@@ -110,6 +111,9 @@ class DarkDraw:
         for i in range(16):
             self.box_chars.ljust('0123456789ABCDEF'[i], y=i+1, color='bold 242 on 0')
             self.box_chars.ljust('0123456789ABCDEF'[i], x=i*3+6, color='bold 242 on 0')
+
+        for x in self.extras:
+            x(scr)
 
         scr.refresh()
         curses.doupdate()
@@ -160,6 +164,9 @@ class DarkDraw:
         elif ch == 'u':         self.current_color = remove_attr(self.current_color, 'underline')
         elif ch == 'B':         self.current_color = 'bold ' + remove_attr(self.current_color, 'bold')
         elif ch == 'b':         self.current_color = remove_attr(self.current_color, 'bold')
+        elif ch == '^Y':        
+            with visidata.SuspendCurses():
+                visidata.view(app)
         else:
             self.status(f"unknown key '{ch}'")
 
@@ -168,19 +175,48 @@ class DarkDraw:
         if b == 1:  # left click to move cursor
             self.cursor_y = self.top_y + y
             self.cursor_x = self.left_x + x
-        elif b == 3:  # right click
-            c = self.scr.inch(y, x)
-            self.current_ch = chr(c)
-            self.current_color = colorstr_from_attr(c >> 8)
 
     def handle_press(self, x, y, b):
-        self.press_y = self.top_y + y
-        self.press_x = self.left_x + x
+        if b == 3:  # right press to pick up
+            def _pickup(scr):
+                attr = 0
+                r = screen_contents.get((x,y), None)
+                if r:
+                    attr = r[1]
+                scr.chgat(y, x, 1, attr | curses.A_UNDERLINE)
+            self.extras.append(_pickup)
+
+        self.press_y = y
+        self.press_x = x
+
         self.lastkey = f'P{b}({x}, {y})'
 
     def handle_release(self, x, y, b):
-        self.cursor = [self.press_x, self.press_y, self.left_x+x, self.top_y+y]
         self.lastkey = f'R{b}({x}, {y})'
+        if b == 1:
+            self.box_cursor = Box(self.scr, self.press_x, self.press_y, x-self.press_x, y-self.press_y)
+        elif b == 3:
+            if self.press_y != y or self.press_x != x:
+                fail('cursor moved')
+
+            r = screen_contents.get((x,y), None)
+            if not r:
+                fail("no contents there")
+            if self.box_chars.contains(x,y):
+                if r:
+                    self.current_ch = r[0]
+                    self.status(f'char now {self.current_ch}')
+            elif self.box_colors.contains(x,y):
+                if r:
+                    self.current_color = str(r[1]) # colorstr_from_attr(attr)
+                    self.status(f'color now {self.current_color}')
+            else:
+                if r:
+                    self.current_ch = ch
+                    self.current_color = colorstr_from_attr(attr)
+                    self.status(f'color now {self.current_color}')
+                    self.status(f'char now {self.current_ch}')
+
 
     def status(self, *args):
         self._status = ' '.join(map(str, args))
@@ -273,5 +309,6 @@ def tui_main(scr):
         else:
             inputfns.append(arg)
 
+    global app
     app = DarkDraw(*(Tile(fn) for fn in inputfns))
     app.run(scr)

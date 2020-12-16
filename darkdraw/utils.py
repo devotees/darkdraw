@@ -6,6 +6,8 @@ import visidata
 
 from wcwidth import wcswidth
 
+screen_contents = {}
+
 class AttrDict(dict):
     'Augment a dict with more convenient .attr syntax.  not-present keys return None.'
     def __getattr__(self, k):
@@ -115,11 +117,12 @@ class Box:
         self.h = v-self.y1
 
     def erase(self):
+        screen_contents.clear()
         for y in range(self.y1, self.y2+1):
             self.scr.addstr(y, 0, ' '*self.w, 0)
 
     def draw(self, yr, xr, s, attr=0):
-        'Draw *s* into box.  *yr* an *xr* may be ranges.'
+        'Draw *s* into box.  *yr* an *xr* in relative coordinates; may be ranges.'
         if isinstance(attr, str):
             attr = colors.get(attr)
 
@@ -130,8 +133,12 @@ class Box:
         if self.x1+max(xr) > xmax: fail('need wider screen (at least %s)' % max(xr))
         for y in yr:
             for x in xr:
+                screen_contents[(self.x1+x, self.y1+y)] = (s, attr)
                 self.scr.addstr(self.y1+y, self.x1+x, s, attr)
 
+    def contains(self, x, y):
+        '*xr* and *yr* in screen coordinates.'
+        return self.x1 <= x < self.x2 and self.y1 <= y < self.y2
 
     def box(self, x1=0, y1=0, dx=0, color=''):
         if self.w <= 0 or self.h <= 0: return
@@ -184,7 +191,7 @@ class Box:
         for i in range(xi-x, w+1):
             self.draw(y, xi+i, ' ', attr)
 
-        return xi-x
+        return w or xi-x
 
     def blit(self, tile, *, y1=0, x1=0, y2=None, x2=None, xoff=0, yoff=0):
         y2 = y2 or self.h-1
